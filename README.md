@@ -1,29 +1,38 @@
 # DingTalk-Qwen Connector
 
-A connector that bridges DingTalk robot with Qwen Code SDK, allowing users to interact with the Qwen Code AI through DingTalk.
+A connector that bridges DingTalk robot with Qwen Code SDK using **Stream mode**, allowing users to interact with the Qwen Code AI through DingTalk with multi-turn conversation support.
 
 ## Features
 
-- Receive messages from DingTalk robot
-- Forward messages to Qwen Code via SDK
-- Return Qwen's responses to DingTalk
-- Support for message signing for security
-- Configurable via environment variables
-- Simple setup assuming `qwen` command is in PATH
+- **Stream Mode**: Uses DingTalk Stream WebSocket (no public IP required)
+- **Multi-turn Conversations**: Session management with configurable timeout
+- **Message Deduplication**: Prevents duplicate processing
+- **Session Commands**: Support for `/new`, `/reset`, `/clear` and Chinese equivalents
+- **Multiple Message Types**: Supports text, audio (voice recognition), images, videos, and files
+- **Qwen Code Integration**: Uses official @qwen-code/sdk for AI capabilities
 
 ## Prerequisites
 
 - Node.js >= 20.x
-- A DingTalk robot webhook URL and secret (optional)
 - Qwen Code >= 0.4.0 installed and accessible as `qwen` command in PATH
-- Install the Qwen Code TypeScript SDK: `npm install @qwen-code/sdk`
+- DingTalk Developer Account with an app created
+- DingTalk robot configured for **Stream mode**
+
+## Required DingTalk Permissions
+
+- `Card.Streaming.Write`
+- `Card.Instance.Write`
+- `qyapi_robot_sendmsg`
 
 ## Installation
 
 ### Option 1: Using npx (Recommended)
 
 ```bash
-npx dingtalk-qwen-connector --dingtalk-webhook YOUR_WEBHOOK_URL --model qwen-code
+npx dingtalk-qwen-connector \
+  --dingtalk-client-id YOUR_APP_KEY \
+  --dingtalk-client-secret YOUR_APP_SECRET \
+  --model qwen-code
 ```
 
 ### Option 2: Clone and Install
@@ -39,38 +48,39 @@ npm run build
 
 ### Environment Variables
 
-Create a `.env` file in the root directory with the following variables:
+Create a `.env` file in the root directory:
 
 ```env
-# DingTalk Bot Configuration
-DINGTALK_BOT_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=your_token
-DINGTALK_BOT_SECRET=your_secret # Optional, for signature verification
+# DingTalk Stream Configuration
+DINGTALK_CLIENT_ID=your_app_key_here       # DingTalk AppKey
+DINGTALK_CLIENT_SECRET=your_app_secret_here # DingTalk AppSecret
 
 # Qwen Code SDK Configuration
-QWEN_CWD=                    # Working directory for Qwen Code (optional, defaults to current directory)
+QWEN_CWD=                    # Working directory (optional)
 QWEN_MODEL=qwen-code        # Model to use
 QWEN_PERMISSION_MODE=default # Permission mode (default|plan|auto-edit|yolo)
+
+# Optional Settings
+DEBUG=false
+SESSION_TIMEOUT=1800000      # Session timeout in ms (default: 30 min)
 ```
 
 ### Command Line Options
 
-Alternatively, you can specify configuration via command line options:
-
 ```bash
 npx dingtalk-qwen-connector \
-  --port 3000 \
-  --dingtalk-webhook "https://oapi.dingtalk.com/robot/send?access_token=xxx" \
-  --dingtalk-secret "xxx" \
+  --dingtalk-client-id "YOUR_APP_KEY" \
+  --dingtalk-client-secret "YOUR_APP_SECRET" \
   --cwd "/path/to/project" \
   --model "qwen-code" \
-  --permission-mode "auto-edit"
+  --permission-mode "auto-edit" \
+  --session-timeout 1800000 \
+  --debug
 ```
 
 ## Usage
 
 ### Running the Connector
-
-After installation, run the connector with:
 
 ```bash
 npm start
@@ -79,28 +89,41 @@ npm start
 Or using npx:
 
 ```bash
-npx dingtalk-qwen-connector
+npx dingtalk-qwen-connector --dingtalk-client-id YOUR_APP_KEY --dingtalk-client-secret YOUR_APP_SECRET
 ```
 
-The connector will start a server that listens for DingTalk webhooks and forwards messages to Qwen Code via the SDK.
+### Setting Up DingTalk Robot
 
-### Setting Up DingTalk Robot Webhook
+1. **Create a DingTalk App** in [DingTalk Developer Platform](https://open.dingtalk.com/)
+2. **Add Robot Capability** to your app
+3. **Configure Robot for Stream Mode**:
+   - Go to Robot settings
+   - Select **Stream mode** (not Webhook mode)
+   - Note your AppKey and AppSecret
+4. **Grant Required Permissions**:
+   - `Card.Streaming.Write`
+   - `Card.Instance.Write`
+   - `qyapi_robot_sendmsg`
+5. **Publish the App** and install it to your organization
 
-1. Create a custom robot in your DingTalk group
-2. Copy the webhook URL and (optionally) the secret
-3. Configure the connector with these values
-4. Set the webhook URL in DingTalk to point to your connector server: `http://your-server:3000/webhook/dingtalk`
+### Session Management
 
-## Permission Modes
+The connector automatically manages conversation sessions:
 
-The connector supports different permission modes for Qwen Code:
+- **New Session**: Automatically created after 30 minutes of inactivity (configurable)
+- **Manual Reset**: Send `/new`, `/reset`, `/clear`, `新会话`, `重新开始`, or `清空对话`
+- **Session Persistence**: Conversation history is maintained for context-aware responses
 
-- `default`: Write tools are rejected unless approved via permission callbacks or in allowed tools. Read-only tools execute without confirmation.
-- `plan`: Blocks all write tools, directing AI to propose a plan first.
-- `auto-edit`: Automatically approves edit tools (edit, write_file), other tools need confirmation.
-- `yolo`: All tools execute automatically without confirmation.
+### Supported Message Types
 
-Choose the appropriate permission mode based on your security requirements.
+| Type | Description |
+|------|-------------|
+| Text | Plain text messages |
+| Audio | Voice messages (with speech recognition) |
+| Picture | Image messages |
+| Video | Video messages |
+| File | File attachments |
+| RichText | Rich text messages |
 
 ## Development
 
@@ -124,34 +147,84 @@ npm test
 
 ## Architecture
 
-The connector consists of several key components:
+```
+┌─────────────────┐
+│ DingTalk Stream │
+│   (WebSocket)   │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐     ┌──────────────────┐
+│  DWClient       │────▶│ Message Dedup    │
+│  Callback       │     │ (5min TTL cache) │
+└────────┬────────┘     └──────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Session Manager │───▶ userSessions Map
+│ (30min timeout) │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ QwenAgentService│───▶ @qwen-code/sdk
+│                 │     (qwen command in PATH)
+└─────────────────┘
+```
 
-- `DingTalkClient`: Handles communication with DingTalk robot API
-- `QwenAgentService`: Interfaces with the Qwen Code via the TypeScript SDK
-- `DingTalkQwenConnector`: Main connector logic that ties everything together
-- `WebhookServer`: HTTP server that receives DingTalk webhooks
-- `cli.ts`: Entry point for the command-line interface
+### Components
+
+- `DingTalkStreamClient`: Handles DingTalk Stream WebSocket connection
+- `DingTalkQwenConnector`: Main connector logic with session management
+- `QwenAgentService`: Interfaces with Qwen Code via TypeScript SDK
+- `cli.ts`: Command-line entry point
 
 ## Security
 
-- The connector supports DingTalk's signature verification for webhook requests
-- All sensitive configuration is handled through environment variables
-- The connector uses the Qwen Code SDK's permission system to control tool execution
-- Assumes Qwen Code is installed locally and accessible via the `qwen` command
+- Uses DingTalk OAuth 2.0 for authentication
+- Access tokens are cached and refreshed automatically
+- Message deduplication prevents replay attacks
+- Session timeout limits exposure window
+- All sensitive configuration via environment variables
+
+## Permission Modes
+
+| Mode | Description |
+|------|-------------|
+| `default` | Write tools rejected unless approved |
+| `plan` | Blocks all write tools, AI proposes plan first |
+| `auto-edit` | Auto-approves edit tools, others need confirmation |
+| `yolo` | All tools execute automatically |
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Qwen command not found**: Ensure Qwen Code is installed and the `qwen` command is available in your PATH.
-2. **Connection timeout**: Check that your webhook URL is accessible and properly configured.
-3. **Permission errors**: Adjust the permission mode according to your security requirements.
+1. **Connection failed**: Check that your AppKey and AppSecret are correct
+2. **Qwen command not found**: Ensure Qwen Code is installed and in PATH
+3. **Duplicate messages**: Message deduplication is working correctly
+4. **Session timeout**: Adjust `SESSION_TIMEOUT` environment variable
 
 ### Verifying Installation
 
-To verify that Qwen Code is properly installed, run:
 ```bash
+# Check Qwen Code installation
 qwen --version
+
+# Check DingTalk credentials
+echo $DINGTALK_CLIENT_ID
+echo $DINGTALK_CLIENT_SECRET
+```
+
+### Debug Mode
+
+Enable debug mode for detailed logs:
+
+```bash
+npx dingtalk-qwen-connector \
+  --dingtalk-client-id YOUR_APP_KEY \
+  --dingtalk-client-secret YOUR_APP_SECRET \
+  --debug
 ```
 
 ## Contributing
@@ -165,3 +238,9 @@ qwen --version
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## References
+
+- [DingTalk OpenClaw Connector](https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector/)
+- [Qwen Code TypeScript SDK](https://qwenlm.github.io/qwen-code-docs/zh/developers/sdk-typescript/)
+- [DingTalk Stream Documentation](https://open.dingtalk.com/document/)

@@ -1,7 +1,7 @@
 {
   "name": "dingtalk-qwen-connector",
   "version": "1.0.0",
-  "description": "Connector between DingTalk robot and Qwen Code agent",
+  "description": "Connector between DingTalk robot and Qwen Code agent using Stream mode",
   "main": "dist/index.js",
   "bin": {
     "dingtalk-qwen-connector": "./dist/cli.js"
@@ -17,7 +17,8 @@
     "qwen",
     "ai",
     "chatbot",
-    "connector"
+    "connector",
+    "stream"
   ],
   "author": "",
   "license": "MIT",
@@ -25,13 +26,12 @@
     "axios": "^1.6.0",
     "commander": "^11.0.0",
     "dotenv": "^16.3.1",
-    "express": "^4.18.2",
+    "dingtalk-stream": "^1.0.0",
     "@qwen-code/sdk": "0.1.4"
   },
   "devDependencies": {
-    "@types/express": "^4.17.17",
-    "@types/jest": "^29.5.5",
     "@types/node": "^20.8.2",
+    "@types/jest": "^29.5.5",
     "jest": "^29.7.0",
     "ts-jest": "^29.1.1",
     "ts-node": "^10.9.1",

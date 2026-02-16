@@ -2,7 +2,6 @@
 
 import { program } from 'commander';
 import { ConnectorConfig } from './connector';
-import { WebhookServer } from './webhook-server';
 import { DingTalkQwenConnector } from './connector';
 import * as dotenv from 'dotenv';
 
@@ -12,13 +11,14 @@ dotenv.config();
 // Define command line options
 program
   .name('dingtalk-qwen-connector')
-  .description('CLI to connect DingTalk robot with Qwen Code agent')
+  .description('CLI to connect DingTalk robot with Qwen Code agent using Stream mode')
   .version('1.0.0');
 
 program
-  .option('-p, --port <number>', 'Port to run the webhook server on', '3000')
-  .option('-d, --dingtalk-webhook <url>', 'DingTalk bot webhook URL')
-  .option('-s, --dingtalk-secret <secret>', 'DingTalk bot secret for signature verification')
+  .option('-d, --dingtalk-client-id <id>', 'DingTalk AppKey (clientId)')
+  .option('-s, --dingtalk-client-secret <secret>', 'DingTalk AppSecret (clientSecret)')
+  .option('--debug', 'Enable debug mode')
+  .option('--session-timeout <ms>', 'Session timeout in milliseconds', '1800000')
   .option('-c, --cwd <path>', 'Working directory for Qwen Code (optional)')
   .option('-m, --model <model>', 'Qwen model to use (optional)')
   .option('--permission-mode <mode>', 'Permission mode (default|plan|auto-edit|yolo)', 'default');
@@ -30,8 +30,10 @@ const options = program.opts();
 // Create connector configuration
 const config: ConnectorConfig = {
   dingtalk: {
-    webhook: options.dingtalkWebhook || process.env.DINGTALK_BOT_WEBHOOK!,
-    secret: options.dingtalkSecret || process.env.DINGTALK_BOT_SECRET
+    clientId: options.dingtalkClientId || process.env.DINGTALK_CLIENT_ID!,
+    clientSecret: options.dingtalkClientSecret || process.env.DINGTALK_CLIENT_SECRET!,
+    debug: options.debug || process.env.DEBUG === 'true',
+    sessionTimeout: parseInt(options.sessionTimeout || process.env.SESSION_TIMEOUT || '1800000')
   },
   qwenAgent: {
     options: {
@@ -44,16 +46,36 @@ const config: ConnectorConfig = {
 };
 
 // Validate required configuration
-if (!config.dingtalk.webhook) {
-  console.error('Error: DingTalk webhook URL is required');
+if (!config.dingtalk.clientId) {
+  console.error('Error: DingTalk Client ID (AppKey) is required');
+  console.error('Please set --dingtalk-client-id or DINGTALK_CLIENT_ID environment variable');
+  process.exit(1);
+}
+
+if (!config.dingtalk.clientSecret) {
+  console.error('Error: DingTalk Client Secret (AppSecret) is required');
+  console.error('Please set --dingtalk-client-secret or DINGTALK_CLIENT_SECRET environment variable');
   process.exit(1);
 }
 
 // Create the connector
 const connector = new DingTalkQwenConnector(config);
 
-// Create and start the webhook server
-const server = new WebhookServer(connector, parseInt(options.port));
-server.start();
+// Handle graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n[CLI] Shutting down...');
+  await connector.stop();
+  process.exit(0);
+});
 
-console.log('DingTalk-Qwen connector is running...');
+process.on('SIGTERM', async () => {
+  console.log('\n[CLI] Shutting down...');
+  await connector.stop();
+  process.exit(0);
+});
+
+// Start the connector
+connector.start().catch((error) => {
+  console.error('[CLI] Failed to start connector:', error);
+  process.exit(1);
+});

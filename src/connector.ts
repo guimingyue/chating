@@ -1,4 +1,4 @@
-import { DingTalkClient, DingTalkConfig } from './dingtalk-client';
+import { DingTalkStreamClient, DingTalkStreamConfig, DingTalkMessage } from './dingtalk-client';
 import { QwenAgentService, QwenAgentConfig } from './qwen-agent-service';
 import * as dotenv from 'dotenv';
 
@@ -6,32 +6,51 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 export interface ConnectorConfig {
-  dingtalk: DingTalkConfig;
+  dingtalk: DingTalkStreamConfig;
   qwenAgent: QwenAgentConfig;
 }
 
+// Commands to start a new session
+const NEW_SESSION_COMMANDS = [
+  '/new', '/reset', '/clear', '/restart',
+  '新会话', '重新开始', '清空对话', '重启'
+];
+
 export class DingTalkQwenConnector {
-  private dingtalkClient: DingTalkClient;
+  private dingtalkClient: DingTalkStreamClient;
   private qwenAgentService: QwenAgentService;
+  private sessionPrompts: Map<string, string[]> = new Map(); // Store conversation history per session
 
   constructor(config: ConnectorConfig) {
-    this.dingtalkClient = new DingTalkClient(config.dingtalk);
+    this.dingtalkClient = new DingTalkStreamClient(config.dingtalk);
     this.qwenAgentService = new QwenAgentService(config.qwenAgent);
+    
+    // Register message handler
+    this.dingtalkClient.onMessage(this.handleMessage.bind(this));
   }
 
   /**
    * Process a message received from DingTalk and send it to Qwen agent
    */
-  async processMessage(text: string): Promise<string> {
+  async processMessage(text: string, sessionKey: string): Promise<string> {
     try {
+      // Get conversation history for this session
+      const history = this.sessionPrompts.get(sessionKey) || [];
+      
+      // Build prompt with history
+      const fullPrompt = this.buildPromptWithHistory(text, history);
+      
       // Send the message to Qwen agent
-      const agentResponse = await this.qwenAgentService.sendPrompt(text);
+      const agentResponse = await this.qwenAgentService.sendPrompt(fullPrompt);
       
       // Check if there was an error
       if (agentResponse.error) {
         console.error('Qwen agent error:', agentResponse.error);
         return `Sorry, I encountered an error: ${agentResponse.error}`;
       }
+      
+      // Update conversation history
+      this.updateSessionHistory(sessionKey, text, agentResponse.result);
       
       // Return the agent's response
       return agentResponse.result || 'No response from Qwen agent';
@@ -42,36 +61,127 @@ export class DingTalkQwenConnector {
   }
 
   /**
-   * Send a response back to DingTalk
+   * Build prompt with conversation history
    */
-  async sendResponseToDingTalk(content: string) {
-    try {
-      await this.dingtalkClient.sendText(content);
-      console.log('Response sent to DingTalk successfully');
-    } catch (error) {
-      console.error('Error sending response to DingTalk:', error);
+  private buildPromptWithHistory(currentMessage: string, history: string[]): string {
+    // Include last 5 exchanges for context (adjust as needed)
+    const recentHistory = history.slice(-10);
+    return [...recentHistory, currentMessage].join('\n\n');
+  }
+
+  /**
+   * Update session conversation history
+   */
+  private updateSessionHistory(sessionKey: string, userMessage: string, assistantResponse: string): void {
+    if (!this.sessionPrompts.has(sessionKey)) {
+      this.sessionPrompts.set(sessionKey, []);
+    }
+    
+    const history = this.sessionPrompts.get(sessionKey)!;
+    history.push(`User: ${userMessage}`);
+    history.push(`Assistant: ${assistantResponse}`);
+    
+    // Limit history to last 20 messages to prevent memory issues
+    if (history.length > 20) {
+      this.sessionPrompts.set(sessionKey, history.slice(-20));
     }
   }
 
   /**
    * Handle incoming message from DingTalk
    */
-  async handleMessageFromDingTalk(text: string): Promise<void> {
-    console.log(`Received message from DingTalk: ${text}`);
+  async handleMessage(message: DingTalkMessage): Promise<void> {
+    console.log(`[Connector] Received message from ${message.senderNick}: ${message.text?.content || message.content?.recognition || ''}`);
     
+    // Extract message content
+    const content = extractContent(message);
+    if (!content) {
+      console.log('[Connector] No text content in message');
+      return;
+    }
+
+    // Check for new session commands
+    const forceNewSession = NEW_SESSION_COMMANDS.some(cmd => 
+      content.toLowerCase().includes(cmd.toLowerCase())
+    );
+
+    // Get session key
+    const { sessionKey, isNew } = this.dingtalkClient.getSessionKey(message.senderId, forceNewSession);
+    
+    if (forceNewSession) {
+      await this.replyToMessage(message, '已开始新的会话，请问有什么可以帮您？');
+      return;
+    }
+
+    if (isNew) {
+      console.log(`[Connector] New session started for user ${message.senderNick}`);
+    }
+
     // Process the message with Qwen agent
-    const response = await this.processMessage(text);
+    const response = await this.processMessage(content, sessionKey);
     
     // Send the response back to DingTalk
-    await this.sendResponseToDingTalk(response);
+    await this.replyToMessage(message, response);
   }
 
   /**
-   * Start the connector (for webhook-based listening)
+   * Reply to a message
+   */
+  private async replyToMessage(message: DingTalkMessage, content: string): Promise<void> {
+    try {
+      const conversationType = message.conversationType === 'group' ? '2' : '1';
+      await this.dingtalkClient.sendTextMessage(
+        message.conversationId,
+        conversationType,
+        content
+      );
+      console.log(`[Connector] Response sent to ${message.senderNick}`);
+    } catch (error) {
+      console.error('[Connector] Error sending response:', error);
+    }
+  }
+
+  /**
+   * Start the connector
    */
   async start(): Promise<void> {
-    console.log('DingTalk-Qwen connector started...');
-    // In a real implementation, this would start an HTTP server to listen for webhooks
-    // For now, we'll just log that it's running
+    console.log('[Connector] Starting DingTalk-Qwen connector...');
+    await this.dingtalkClient.connect();
+    console.log('[Connector] DingTalk-Qwen connector is running');
+  }
+
+  /**
+   * Stop the connector
+   */
+  async stop(): Promise<void> {
+    console.log('[Connector] Stopping DingTalk-Qwen connector...');
+    await this.dingtalkClient.disconnect();
+    console.log('[Connector] DingTalk-Qwen connector stopped');
+  }
+}
+
+// Helper function to extract message content
+function extractContent(message: DingTalkMessage): string | null {
+  switch (message.msgtype) {
+    case 'text':
+      return message.text?.content || null;
+    case 'richText':
+      if (message.richText?.parts) {
+        return message.richText.parts
+          .filter((part: any) => part.type === 'text')
+          .map((part: any) => part.content)
+          .join('');
+      }
+      return null;
+    case 'audio':
+      return message.content?.recognition || '[Voice Message]';
+    case 'picture':
+      return '[Image]';
+    case 'video':
+      return '[Video]';
+    case 'file':
+      return '[File]';
+    default:
+      return message.text?.content || null;
   }
 }

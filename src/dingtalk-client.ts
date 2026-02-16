@@ -1,101 +1,246 @@
-import axios, { AxiosResponse } from 'axios';
-import * as crypto from 'crypto';
-import * as qs from 'querystring';
+import { DWClient, DWConfig, logger } from 'dingtalk-stream';
+import axios from 'axios';
+
+export interface DingTalkStreamConfig {
+  clientId: string;       // DingTalk AppKey
+  clientSecret: string;   // DingTalk AppSecret
+  debug?: boolean;        // Enable debug mode
+  sessionTimeout?: number; // Session timeout in milliseconds (default: 30 min)
+}
 
 export interface DingTalkMessage {
+  messageId: string;
+  senderId: string;
+  senderNick: string;
+  conversationId: string;
   msgtype: string;
+  text?: {
+    content: string;
+  };
+  content?: {
+    recognition?: string;
+  };
+  conversationType?: string;
+  chatbotUserId?: string;
   [key: string]: any;
 }
 
-export interface DingTalkConfig {
-  webhook: string;
-  secret?: string;
+export interface DingTalkResponse {
+  success: boolean;
+  messageId: string;
 }
 
-export class DingTalkClient {
-  private config: DingTalkConfig;
+export class DingTalkStreamClient {
+  private client: DWClient;
+  private config: DingTalkStreamConfig;
+  private accessToken: string | null = null;
+  private accessTokenExpiry: number = 0;
+  private processedMessages: Map<string, number> = new Map();
+  private userSessions: Map<string, { sessionId: string; lastActivity: number }> = new Map();
+  private messageHandlers: Array<(message: DingTalkMessage) => Promise<void>> = [];
 
-  constructor(config: DingTalkConfig) {
+  constructor(config: DingTalkStreamConfig) {
     this.config = config;
+    this.client = new DWClient({
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+      debug: config.debug || false,
+    });
   }
 
   /**
-   * Send a message to DingTalk robot
+   * Connect to DingTalk Stream WebSocket
    */
-  async sendMessage(message: DingTalkMessage): Promise<AxiosResponse> {
-    const url = this.getSignedWebhookUrl();
+  async connect(): Promise<void> {
+    const TOPIC_ROBOT = 'robot';
     
-    const response = await axios.post(url, message, {
-      headers: {
-        'Content-Type': 'application/json;charset=utf-8',
-      },
+    this.client.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
+      try {
+        const message = this.parseMessage(res);
+        
+        // Message deduplication
+        if (this.isMessageProcessed(message.messageId)) {
+          logger.info(`[DingTalk] Duplicate message ignored: ${message.messageId}`);
+          return;
+        }
+        this.markMessageProcessed(message.messageId);
+
+        // Acknowledge immediately to prevent DingTalk server retries
+        await this.client.socketCallBackResponse(message.messageId, { success: true });
+
+        // Process the message
+        await this.handleMessage(message);
+      } catch (error) {
+        logger.error('[DingTalk] Error processing message:', error);
+      }
     });
 
-    return response;
+    await this.client.connect();
+    logger.info('[DingTalk] Connected to Stream WebSocket');
   }
 
   /**
-   * Generate signed webhook URL if secret is provided
+   * Parse incoming message to DingTalkMessage format
    */
-  private getSignedWebhookUrl(): string {
-    if (!this.config.secret) {
-      return this.config.webhook;
+  private parseMessage(res: any): DingTalkMessage {
+    const data = res.data as any;
+    return {
+      messageId: res.messageId,
+      senderId: data.senderStaffId || data.senderId,
+      senderNick: data.senderNick || 'User',
+      conversationId: data.conversationId,
+      msgtype: data.msgtype,
+      text: data.text,
+      content: data.content,
+      conversationType: data.conversationType,
+      chatbotUserId: data.chatbotUserId,
+      ...data,
+    };
+  }
+
+  /**
+   * Handle incoming message
+   */
+  private async handleMessage(message: DingTalkMessage): Promise<void> {
+    for (const handler of this.messageHandlers) {
+      await handler(message);
+    }
+  }
+
+  /**
+   * Register a message handler
+   */
+  onMessage(handler: (message: DingTalkMessage) => Promise<void>): void {
+    this.messageHandlers.push(handler);
+  }
+
+  /**
+   * Get session key for multi-turn conversation
+   */
+  getSessionKey(senderId: string, forceNew: boolean = false): { sessionKey: string; isNew: boolean } {
+    const now = Date.now();
+    const sessionTimeout = this.config.sessionTimeout || 30 * 60 * 1000; // 30 minutes default
+    const existing = this.userSessions.get(senderId);
+
+    // Force new session (user commands: /new, /reset, etc.)
+    if (forceNew) {
+      const sessionId = `dingtalk-qwen:${senderId}:${now}`;
+      this.userSessions.set(senderId, { sessionId, lastActivity: now });
+      return { sessionKey: sessionId, isNew: true };
     }
 
-    const timestamp = Date.now();
-    const secret = this.config.secret;
+    // Check timeout
+    if (existing && now - existing.lastActivity > sessionTimeout) {
+      const sessionId = `dingtalk-qwen:${senderId}:${now}`;
+      this.userSessions.set(senderId, { sessionId, lastActivity: now });
+      return { sessionKey: sessionId, isNew: true };
+    }
+
+    // Reuse existing session
+    if (existing) {
+      existing.lastActivity = now;
+      return { sessionKey: existing.sessionId, isNew: false };
+    }
+
+    // First-time session
+    const sessionId = `dingtalk-qwen:${senderId}`;
+    this.userSessions.set(senderId, { sessionId, lastActivity: now });
+    return { sessionKey: sessionId, isNew: false };
+  }
+
+  /**
+   * Message deduplication
+   */
+  private isMessageProcessed(messageId: string): boolean {
+    return this.processedMessages.has(messageId);
+  }
+
+  private markMessageProcessed(messageId: string): void {
+    this.processedMessages.set(messageId, Date.now());
+    // Cleanup old messages (keep last 100)
+    if (this.processedMessages.size >= 100) {
+      this.cleanupProcessedMessages();
+    }
+  }
+
+  private cleanupProcessedMessages(): void {
+    const now = Date.now();
+    const TTL = 5 * 60 * 1000; // 5 minutes
+    for (const [id, timestamp] of this.processedMessages.entries()) {
+      if (now - timestamp > TTL) {
+        this.processedMessages.delete(id);
+      }
+    }
+  }
+
+  /**
+   * Get access token for API calls
+   */
+  async getAccessToken(): Promise<string> {
+    const now = Date.now();
+    if (this.accessToken && this.accessTokenExpiry > now + 60000) {
+      return this.accessToken;
+    }
+
+    const response = await axios.post(
+      'https://api.dingtalk.com/v1.0/oauth2/accessToken',
+      {
+        appKey: this.config.clientId,
+        appSecret: this.config.clientSecret,
+      }
+    );
+
+    this.accessToken = response.data.accessToken;
+    this.accessTokenExpiry = now + response.data.expiresIn * 1000;
+    return this.accessToken;
+  }
+
+  /**
+   * Send a text message to DingTalk
+   */
+  async sendTextMessage(
+    conversationId: string,
+    conversationType: '1' | '2', // '1' for personal, '2' for group
+    content: string,
+    atUserIds?: string[],
+    atAll?: boolean
+  ): Promise<DingTalkResponse> {
+    const token = await this.getAccessToken();
     
-    // Create signature using HMAC-SHA256
-    const signData = `${timestamp}\n${secret}`;
-    const hmac = crypto.createHmac('sha256', secret);
-    hmac.update(signData);
-    const signature = encodeURIComponent(hmac.digest('base64'));
+    const response = await axios.post(
+      'https://api.dingtalk.com/v1.0/robot/groupMessages/send',
+      {
+        chatbotId: this.config.clientId,
+        conversationId,
+        conversationType,
+        msgtype: 'text',
+        text: {
+          content,
+        },
+        at: {
+          atUserIds: atUserIds || [],
+          isAtAll: atAll || false,
+        },
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
 
-    // Append timestamp and signature to the webhook URL
-    const separator = this.config.webhook.includes('?') ? '&' : '?';
-    return `${this.config.webhook}${separator}timestamp=${timestamp}&sign=${signature}`;
+    return {
+      success: response.data.success,
+      messageId: response.data.messageId,
+    };
   }
 
   /**
-   * Send a text message
+   * Disconnect from DingTalk Stream
    */
-  async sendText(content: string, atMobiles?: string[], isAtAll?: boolean): Promise<AxiosResponse> {
-    const message: DingTalkMessage = {
-      msgtype: 'text',
-      text: {
-        content: content
-      }
-    };
-
-    if (atMobiles || isAtAll) {
-      message.at = {
-        atMobiles: atMobiles || [],
-        isAtAll: isAtAll || false
-      };
-    }
-
-    return this.sendMessage(message);
-  }
-
-  /**
-   * Send a markdown message
-   */
-  async sendMarkdown(title: string, text: string, atMobiles?: string[], isAtAll?: boolean): Promise<AxiosResponse> {
-    const message: DingTalkMessage = {
-      msgtype: 'markdown',
-      markdown: {
-        title: title,
-        text: text
-      }
-    };
-
-    if (atMobiles || isAtAll) {
-      message.at = {
-        atMobiles: atMobiles || [],
-        isAtAll: isAtAll || false
-      };
-    }
-
-    return this.sendMessage(message);
+  async disconnect(): Promise<void> {
+    await this.client.close();
+    logger.info('[DingTalk] Disconnected from Stream WebSocket');
   }
 }

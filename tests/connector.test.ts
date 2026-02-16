@@ -1,40 +1,128 @@
 import { DingTalkQwenConnector } from '../src/connector';
-import { DingTalkClient } from '../src/dingtalk-client';
+import { DingTalkStreamClient } from '../src/dingtalk-client';
 import { QwenAgentService } from '../src/qwen-agent-service';
-import { mock, MockProxy } from 'jest-mock-extended';
+import { jest } from '@jest/globals';
+
+// Mock the dependencies
+jest.mock('../src/dingtalk-client');
+jest.mock('../src/qwen-agent-service');
+
+const MockedDingTalkClient = DingTalkStreamClient as jest.MockedClass<typeof DingTalkStreamClient>;
+const MockedQwenAgentService = QwenAgentService as jest.MockedClass<typeof QwenAgentService>;
 
 describe('DingTalkQwenConnector', () => {
   let connector: DingTalkQwenConnector;
-  let mockDingTalkClient: MockProxy<DingTalkClient>;
-  let mockQwenAgentService: MockProxy<QwenAgentService>;
+  let mockDingtalkClient: jest.Mocked<DingTalkStreamClient>;
+  let mockQwenAgentService: jest.Mocked<QwenAgentService>;
+
+  const mockConfig = {
+    dingtalk: {
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      sessionTimeout: 1800000,
+    },
+    qwenAgent: {
+      options: {
+        model: 'qwen-code',
+        pathToQwenExecutable: 'qwen',
+      },
+    },
+  };
 
   beforeEach(() => {
-    mockDingTalkClient = mock<DingTalkClient>();
-    mockQwenAgentService = mock<QwenAgentService>();
-    
-    // Since we can't easily mock the constructor, we'll test differently
-    connector = new (DingTalkQwenConnector as any)(mockDingTalkClient, mockQwenAgentService);
+    mockDingtalkClient = {
+      onMessage: jest.fn(),
+      getSessionKey: jest.fn(),
+      sendTextMessage: jest.fn(),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+    } as any;
+
+    mockQwenAgentService = {
+      sendPrompt: jest.fn(),
+    } as any;
+
+    MockedDingTalkClient.mockImplementation(() => mockDingtalkClient);
+    MockedQwenAgentService.mockImplementation(() => mockQwenAgentService);
+
+    connector = new DingTalkQwenConnector(mockConfig);
   });
 
-  it('should process a message and return a response', async () => {
-    const inputText = 'Hello, Qwen!';
-    const agentResponse = { result: 'Hello, user!' };
-    
+  it('should process a message with session history', async () => {
+    const text = 'Hello, Qwen!';
+    const sessionKey = 'test-session';
+    const agentResponse = { result: 'Hello, user!', error: undefined };
+
     mockQwenAgentService.sendPrompt.mockResolvedValue(agentResponse as any);
 
-    const result = await (connector as any).processMessage(inputText);
+    const result = await (connector as any).processMessage(text, sessionKey);
 
     expect(result).toBe(agentResponse.result);
-    expect(mockQwenAgentService.sendPrompt).toHaveBeenCalledWith(inputText);
+    expect(mockQwenAgentService.sendPrompt).toHaveBeenCalled();
   });
 
-  it('should handle errors gracefully when processing messages', async () => {
-    const inputText = 'Problematic input';
-    
-    mockQwenAgentService.sendPrompt.mockRejectedValue(new Error('Test error'));
+  it('should handle errors when processing messages', async () => {
+    const text = 'Problematic input';
+    const sessionKey = 'test-session';
+    const agentResponse = { result: '', error: 'Test error' };
 
-    const result = await (connector as any).processMessage(inputText);
+    mockQwenAgentService.sendPrompt.mockResolvedValue(agentResponse as any);
+
+    const result = await (connector as any).processMessage(text, sessionKey);
 
     expect(result).toContain('Sorry, I encountered an error');
+  });
+
+  it('should handle new session commands', async () => {
+    const mockMessage = {
+      senderNick: 'Test User',
+      senderId: 'test-user-id',
+      conversationId: 'test-conversation',
+      conversationType: '1',
+      msgtype: 'text',
+      text: { content: '/new' },
+    };
+
+    mockDingtalkClient.getSessionKey.mockReturnValue({ sessionKey: 'new-session', isNew: true });
+
+    await connector.handleMessage(mockMessage as any);
+
+    expect(mockDingtalkClient.sendTextMessage).toHaveBeenCalledWith(
+      'test-conversation',
+      '1',
+      expect.stringContaining('已开始新的会话')
+    );
+  });
+
+  it('should extract text content from text messages', () => {
+    const mockMessage = {
+      msgtype: 'text',
+      text: { content: 'Hello' },
+    };
+
+    const content = (connector as any).extractContent(mockMessage);
+
+    expect(content).toBe('Hello');
+  });
+
+  it('should extract content from audio messages', () => {
+    const mockMessage = {
+      msgtype: 'audio',
+      content: { recognition: 'This is voice recognition' },
+    };
+
+    const content = (connector as any).extractContent(mockMessage);
+
+    expect(content).toBe('This is voice recognition');
+  });
+
+  it('should handle picture messages', () => {
+    const mockMessage = {
+      msgtype: 'picture',
+    };
+
+    const content = (connector as any).extractContent(mockMessage);
+
+    expect(content).toBe('[Image]');
   });
 });
