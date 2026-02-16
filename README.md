@@ -281,9 +281,28 @@ npm run dev
 
 # Run tests
 npm test
+```
 
-# Clean build
-npm run clean
+### Permission Issues
+
+If you encounter permission errors during installation:
+
+```bash
+# Fix ownership of project directory
+sudo chown -R $(whoami) .
+
+# Clean and reinstall
+rm -rf node_modules package-lock.json
+npm install
+```
+
+### Build Verification
+
+After successful build, verify the CLI:
+
+```bash
+npm run build
+node dist/cli.js --help
 ```
 
 ## 📁 Project Structure
@@ -333,6 +352,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [Qwen Code TypeScript SDK Docs](https://qwenlm.github.io/qwen-code-docs/zh/developers/sdk-typescript/)
 - [DingTalk Stream API](https://open.dingtalk.com/document/orgapp/stream-mode)
 - [@qwen-code/sdk on npm](https://www.npmjs.com/package/@qwen-code/sdk)
+- [dingtalk-stream on npm](https://www.npmjs.com/package/dingtalk-stream)
 
 ## 📞 Support
 
