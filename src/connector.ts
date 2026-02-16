@@ -161,10 +161,10 @@ export class DingTalkQwenConnector {
 }
 
 // Helper function to extract message content
-function extractContent(message: DingTalkMessage): string | null {
+function extractContent(message: DingTalkMessage): string {
   switch (message.msgtype) {
     case 'text':
-      return message.text?.content || null;
+      return message.text?.content || '';
     case 'richText':
       if (message.richText?.parts) {
         return message.richText.parts
@@ -172,7 +172,7 @@ function extractContent(message: DingTalkMessage): string | null {
           .map((part: any) => part.content)
           .join('');
       }
-      return null;
+      return '';
     case 'audio':
       return message.content?.recognition || '[Voice Message]';
     case 'picture':
@@ -182,6 +182,6 @@ function extractContent(message: DingTalkMessage): string | null {
     case 'file':
       return '[File]';
     default:
-      return message.text?.content || null;
+      return message.text?.content || '';
   }
 }

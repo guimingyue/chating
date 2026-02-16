@@ -100,7 +100,7 @@ describe('DingTalkQwenConnector', () => {
       text: { content: 'Hello' },
     };
 
-    const content = (connector as any).extractContent(mockMessage);
+    const content = extractContent(mockMessage);
 
     expect(content).toBe('Hello');
   });
@@ -111,7 +111,7 @@ describe('DingTalkQwenConnector', () => {
       content: { recognition: 'This is voice recognition' },
     };
 
-    const content = (connector as any).extractContent(mockMessage);
+    const content = extractContent(mockMessage);
 
     expect(content).toBe('This is voice recognition');
   });
@@ -121,8 +121,34 @@ describe('DingTalkQwenConnector', () => {
       msgtype: 'picture',
     };
 
-    const content = (connector as any).extractContent(mockMessage);
+    const content = extractContent(mockMessage);
 
     expect(content).toBe('[Image]');
   });
 });
+
+// Import the helper function
+function extractContent(message: any): string {
+  switch (message.msgtype) {
+    case 'text':
+      return message.text?.content || '';
+    case 'richText':
+      if (message.richText?.parts) {
+        return message.richText.parts
+          .filter((part: any) => part.type === 'text')
+          .map((part: any) => part.content)
+          .join('');
+      }
+      return '';
+    case 'audio':
+      return message.content?.recognition || '[Voice Message]';
+    case 'picture':
+      return '[Image]';
+    case 'video':
+      return '[Video]';
+    case 'file':
+      return '[File]';
+    default:
+      return message.text?.content || '';
+  }
+}

@@ -1,4 +1,4 @@
-import { DWClient, DWConfig, logger } from 'dingtalk-stream';
+import { DWClient, TOPIC_ROBOT } from 'dingtalk-stream';
 import axios from 'axios';
 
 export interface DingTalkStreamConfig {
@@ -52,15 +52,13 @@ export class DingTalkStreamClient {
    * Connect to DingTalk Stream WebSocket
    */
   async connect(): Promise<void> {
-    const TOPIC_ROBOT = 'robot';
-    
     this.client.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
       try {
         const message = this.parseMessage(res);
         
         // Message deduplication
         if (this.isMessageProcessed(message.messageId)) {
-          logger.info(`[DingTalk] Duplicate message ignored: ${message.messageId}`);
+          console.log(`[DingTalk] Duplicate message ignored: ${message.messageId}`);
           return;
         }
         this.markMessageProcessed(message.messageId);
@@ -71,12 +69,12 @@ export class DingTalkStreamClient {
         // Process the message
         await this.handleMessage(message);
       } catch (error) {
-        logger.error('[DingTalk] Error processing message:', error);
+        console.error('[DingTalk] Error processing message:', error);
       }
     });
 
     await this.client.connect();
-    logger.info('[DingTalk] Connected to Stream WebSocket');
+    console.log('[DingTalk] Connected to Stream WebSocket');
   }
 
   /**
@@ -192,7 +190,7 @@ export class DingTalkStreamClient {
 
     this.accessToken = response.data.accessToken;
     this.accessTokenExpiry = now + response.data.expiresIn * 1000;
-    return this.accessToken;
+    return this.accessToken!;
   }
 
   /**
@@ -240,7 +238,8 @@ export class DingTalkStreamClient {
    * Disconnect from DingTalk Stream
    */
   async disconnect(): Promise<void> {
-    await this.client.close();
-    logger.info('[DingTalk] Disconnected from Stream WebSocket');
+    // DWClient doesn't have a close method in the current SDK
+    // The connection will be closed when the process exits
+    console.log('[DingTalk] Disconnecting from Stream WebSocket');
   }
 }
