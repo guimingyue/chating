@@ -31,7 +31,7 @@ A connector that bridges DingTalk robot with Qwen Code using **Stream mode**, en
 
 ## 🚀 Quick Start
 
-### Using npx (Recommended)
+### Option 1: Using npx (Published on npm)
 
 ```bash
 npx dingtalk-qwen-connector \
@@ -40,14 +40,36 @@ npx dingtalk-qwen-connector \
   --model qwen-code
 ```
 
-### Install Locally
+### Option 2: Install Locally from Source
 
 ```bash
+# Clone the repository
 git clone https://github.com/guimingyue/chating.git
 cd chating
+
+# Fix permissions (if needed)
+sudo chown -R $(whoami) .
+
+# Install dependencies
+rm -rf node_modules package-lock.json
 npm install
+
+# Build TypeScript
 npm run build
+
+# Run the connector
 npm start
+```
+
+### Option 3: Install Globally
+
+```bash
+npm install -g dingtalk-qwen-connector
+
+# Then run from anywhere
+dingtalk-qwen-connector \
+  --dingtalk-client-id YOUR_APP_KEY \
+  --dingtalk-client-secret YOUR_APP_SECRET
 ```
 
 ## ⚙️ Configuration
