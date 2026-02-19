@@ -36,24 +36,25 @@ export class DingTalkQwenConnector {
     try {
       // Get conversation history for this session
       const history = this.sessionPrompts.get(sessionKey) || [];
-      
+
       // Build prompt with history
       const fullPrompt = this.buildPromptWithHistory(text, history);
-      
+
       // Send the message to Qwen agent
       const agentResponse = await this.qwenAgentService.sendPrompt(fullPrompt);
-      
+
       // Check if there was an error
       if (agentResponse.error) {
         console.error('Qwen agent error:', agentResponse.error);
         return `Sorry, I encountered an error: ${agentResponse.error}`;
       }
-      
+
       // Update conversation history
       this.updateSessionHistory(sessionKey, text, agentResponse.result);
-      
-      // Return the agent's response
-      return agentResponse.result || 'No response from Qwen agent';
+
+      // Return the agent's response, ensure it's a string
+      const response = agentResponse.result;
+      return typeof response === 'string' ? response : JSON.stringify(response);
     } catch (error) {
       console.error('Error processing message:', error);
       return 'Sorry, I encountered an error processing your request.';
@@ -92,7 +93,8 @@ export class DingTalkQwenConnector {
    */
   async handleMessage(message: DingTalkMessage): Promise<void> {
     console.log(`[Connector] Received message from ${message.senderNick}: ${message.text?.content || message.content?.recognition || ''}`);
-    
+    console.log(`[Connector] senderId: ${message.senderId}, senderStaffId: ${message.senderStaffId || 'not provided'}`);
+
     // Extract message content
     const content = extractContent(message);
     if (!content) {
@@ -101,13 +103,13 @@ export class DingTalkQwenConnector {
     }
 
     // Check for new session commands
-    const forceNewSession = NEW_SESSION_COMMANDS.some(cmd => 
+    const forceNewSession = NEW_SESSION_COMMANDS.some(cmd =>
       content.toLowerCase().includes(cmd.toLowerCase())
     );
 
     // Get session key
     const { sessionKey, isNew } = this.dingtalkClient.getSessionKey(message.senderId, forceNewSession);
-    
+
     if (forceNewSession) {
       await this.replyToMessage(message, '已开始新的会话，请问有什么可以帮您？');
       return;
@@ -119,7 +121,7 @@ export class DingTalkQwenConnector {
 
     // Process the message with Qwen agent
     const response = await this.processMessage(content, sessionKey);
-    
+
     // Send the response back to DingTalk
     await this.replyToMessage(message, response);
   }
@@ -130,10 +132,13 @@ export class DingTalkQwenConnector {
   private async replyToMessage(message: DingTalkMessage, content: string): Promise<void> {
     try {
       const conversationType = message.conversationType === 'group' ? '2' : '1';
+      // For personal chats, use senderStaffId which is the actual userId for API calls
+      const userIds = conversationType === '1' ? [message.senderStaffId || message.senderId] : undefined;
       await this.dingtalkClient.sendTextMessage(
         message.conversationId,
         conversationType,
-        content
+        content,
+        userIds
       );
       console.log(`[Connector] Response sent to ${message.senderNick}`);
     } catch (error) {

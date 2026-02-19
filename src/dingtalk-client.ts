@@ -10,7 +10,8 @@ export interface DingTalkStreamConfig {
 
 export interface DingTalkMessage {
   messageId: string;
-  senderId: string;
+  senderId: string;       // This is the unionId or openId from stream
+  senderStaffId?: string; // Actual staffId for API calls
   senderNick: string;
   conversationId: string;
   msgtype: string;
@@ -22,6 +23,7 @@ export interface DingTalkMessage {
   };
   conversationType?: string;
   chatbotUserId?: string;
+  incomingWebhook?: string;
   [key: string]: any;
 }
 
@@ -54,8 +56,15 @@ export class DingTalkStreamClient {
   async connect(): Promise<void> {
     this.client.registerCallbackListener(TOPIC_ROBOT, async (res: any) => {
       try {
+        console.log('[DingTalk] message received, ' + res);
         const message = this.parseMessage(res);
-        
+
+        // Skip system messages (e.g., heartbeats) that don't have messageId
+        if (!message.messageId) {
+          console.log('[DingTalk] System message received, skipping acknowledgment');
+          return;
+        }
+
         // Message deduplication
         if (this.isMessageProcessed(message.messageId)) {
           console.log(`[DingTalk] Duplicate message ignored: ${message.messageId}`);
@@ -81,10 +90,25 @@ export class DingTalkStreamClient {
    * Parse incoming message to DingTalkMessage format
    */
   private parseMessage(res: any): DingTalkMessage {
-    const data = res.data as any;
+    // Parse data if it's a JSON string
+    let data = res.data;
+    if (typeof data === 'string') {
+      try {
+        data = JSON.parse(data);
+      } catch (error) {
+        console.error('[DingTalk] Failed to parse message data:', error);
+        data = {};
+      }
+    }
+
+    // Debug: log the full data structure
+    console.log('[DingTalk] Raw message data:', JSON.stringify(data, null, 2));
+    console.log('[DingTalk] Message headers:', JSON.stringify(res.headers, null, 2));
+
     return {
-      messageId: res.messageId,
+      messageId: res.headers?.messageId,
       senderId: data.senderStaffId || data.senderId,
+      senderStaffId: data.senderStaffId,
       senderNick: data.senderNick || 'User',
       conversationId: data.conversationId,
       msgtype: data.msgtype,
@@ -204,34 +228,60 @@ export class DingTalkStreamClient {
     atAll?: boolean
   ): Promise<DingTalkResponse> {
     const token = await this.getAccessToken();
-    
-    const response = await axios.post(
-      'https://api.dingtalk.com/v1.0/robot/groupMessages/send',
-      {
-        chatbotId: this.config.clientId,
-        conversationId,
-        conversationType,
-        msgtype: 'text',
-        text: {
-          content,
-        },
-        at: {
-          atUserIds: atUserIds || [],
-          isAtAll: atAll || false,
-        },
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
 
-    return {
-      success: response.data.success,
-      messageId: response.data.messageId,
-    };
+    // Ensure content is a string
+    const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+
+    // Different endpoints and request formats for personal vs group chats
+    if (conversationType === '2') {
+      // Group chat: use groupMessages/send
+      const response = await axios.post(
+        'https://api.dingtalk.com/v1.0/robot/groupMessages/send',
+        {
+          robotCode: this.config.clientId,
+          openConversationId: conversationId,
+          msgKey: 'sampleText',
+          msgParam: JSON.stringify({
+            content: contentStr,
+          }),
+        },
+        {
+          headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      return {
+        success: response.data.success,
+        messageId: response.data.messageId,
+      };
+    } else {
+      // Personal chat: use oToMessages/batchSend
+      const response = await axios.post(
+        'https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend',
+        {
+          robotCode: this.config.clientId,
+          userIds: atUserIds || [],
+          msgKey: 'sampleText',
+          msgParam: JSON.stringify({
+            content: contentStr,
+          }),
+        },
+        {
+          headers: {
+            'x-acs-dingtalk-access-token': token,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      return {
+        success: response.data.success,
+        messageId: response.data.messageId,
+      };
+    }
   }
 
   /**

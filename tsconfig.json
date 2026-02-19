@@ -12,7 +12,9 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "inlineSourceMap": false,
+    "inlineSources": true
   },
   "include": [
     "src/**/*"
