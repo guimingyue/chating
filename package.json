@@ -1,10 +1,10 @@
 {
-  "name": "chatting",
+  "name": "chating",
   "version": "1.0.0",
   "description": "Connector between DingTalk robot and Qwen Code agent using Stream mode",
   "main": "dist/index.js",
   "bin": {
-    "chatting": "./dist/cli.js"
+    "chating": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
