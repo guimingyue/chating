@@ -12,7 +12,21 @@ dotenv.config();
 program
   .name('dingtalk-qwen-connector')
   .description('CLI to connect DingTalk robot with Qwen Code agent using Stream mode')
-  .version('1.0.0');
+  .version('1.0.0')
+  .addHelpText('after', `
+Control Commands (send via DingTalk):
+  /cd <path>          Change working directory (alias: /cwd, /workspace)
+  /pwd                Show current working directory
+  /status             Show current session status (cwd, model, permission mode)
+  /model <name>       Change AI model (e.g., /model qwen-max)
+  /mode <mode>        Change permission mode (default|plan|auto-edit|yolo)
+  /new                Start a new session (alias: /reset, /clear)
+
+Examples:
+  /cd /path/to/project    - Switch to project directory
+  /model qwen-max         - Use qwen-max model
+  /mode yolo              - Enable auto-execute mode
+`);
 
 program
   .option('-d, --dingtalk-client-id <id>', 'DingTalk AppKey (clientId)')

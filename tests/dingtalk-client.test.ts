@@ -73,7 +73,7 @@ describe('DingTalkStreamClient', () => {
     (client as any).messageHandlers = [mockHandler];
 
     // Get the callback registered
-    const callback = (mockDWClient.registerCallbackListener as jest.Mock).mock.calls[0][1];
+    const callback = (mockDWClient.registerCallbackListener as jest.Mock).mock.calls[0][1] as (response: any) => Promise<void>;
     await callback(mockResponse);
 
     expect(mockDWClient.socketCallBackResponse).toHaveBeenCalledWith(
@@ -99,7 +99,7 @@ describe('DingTalkStreamClient', () => {
     const mockHandler = jest.fn();
     (client as any).messageHandlers = [mockHandler];
 
-    const callback = (mockDWClient.registerCallbackListener as jest.Mock).mock.calls[0][1];
+    const callback = (mockDWClient.registerCallbackListener as jest.Mock).mock.calls[0][1] as (response: any) => Promise<void>;
 
     // First call should process
     await callback(mockResponse);

@@ -38,7 +38,7 @@ describe('QwenAgentService', () => {
             message: { role: 'assistant', content: 'This is the agent response' }
           }
         ];
-        
+
         return {
           next: () => {
             if (count < messages.length) {
@@ -60,7 +60,9 @@ describe('QwenAgentService', () => {
       prompt: prompt,
       options: {
         cwd: '/test/path',
-        model: 'qwen-test-model'
+        model: 'qwen-test-model',
+        pathToQwenExecutable: 'qwen',
+        permissionMode: 'default'
       }
     });
     expect(response.result).toBe('This is the agent response');

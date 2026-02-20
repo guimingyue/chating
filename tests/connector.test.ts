@@ -40,6 +40,14 @@ describe('DingTalkQwenConnector', () => {
 
     mockQwenAgentService = {
       sendPrompt: jest.fn(),
+      getCwd: jest.fn(),
+      setCwd: jest.fn(),
+      getModel: jest.fn(),
+      setModel: jest.fn(),
+      getPermissionMode: jest.fn(),
+      setPermissionMode: jest.fn(),
+      getSessionState: jest.fn(),
+      clearSession: jest.fn(),
     } as any;
 
     MockedDingTalkClient.mockImplementation(() => mockDingtalkClient);
@@ -90,7 +98,8 @@ describe('DingTalkQwenConnector', () => {
     expect(mockDingtalkClient.sendTextMessage).toHaveBeenCalledWith(
       'test-conversation',
       '1',
-      expect.stringContaining('已开始新的会话')
+      '已开始新的会话，请问有什么可以帮您？',
+      ['test-user-id']
     );
   });
 

@@ -1,5 +1,5 @@
 import { DingTalkStreamClient, DingTalkStreamConfig, DingTalkMessage } from './dingtalk-client';
-import { QwenAgentService, QwenAgentConfig } from './qwen-agent-service';
+import { QwenAgentService, QwenAgentConfig, SessionState } from './qwen-agent-service';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -16,6 +16,19 @@ const NEW_SESSION_COMMANDS = [
   '新会话', '重新开始', '清空对话', '重启'
 ];
 
+// Control commands
+const CONTROL_COMMANDS = {
+  // Workspace control
+  CD: ['/cd', '/cwd', '/workspace', '/workdir', '切换目录', '切换工作目录'],
+  PWD: ['/pwd', '/where', '当前目录', '工作目录'],
+  // Status
+  STATUS: ['/status', '/info', '/state', '状态', '当前状态'],
+  // Model control
+  MODEL: ['/model', '/llm', '/ai', '切换模型', '模型'],
+  // Permission mode control
+  MODE: ['/mode', '/permission', '/perm', '权限模式', '切换模式']
+};
+
 export class DingTalkQwenConnector {
   private dingtalkClient: DingTalkStreamClient;
   private qwenAgentService: QwenAgentService;
@@ -24,9 +37,92 @@ export class DingTalkQwenConnector {
   constructor(config: ConnectorConfig) {
     this.dingtalkClient = new DingTalkStreamClient(config.dingtalk);
     this.qwenAgentService = new QwenAgentService(config.qwenAgent);
-    
+
     // Register message handler
     this.dingtalkClient.onMessage(this.handleMessage.bind(this));
+  }
+
+  /**
+   * Check if message is a control command and handle it
+   */
+  async handleControlCommand(content: string, sessionKey: string): Promise<{ handled: boolean; response?: string }> {
+    const trimmedContent = content.trim();
+
+    // Check for /cd or /cwd command
+    for (const cmd of CONTROL_COMMANDS.CD) {
+      if (trimmedContent.toLowerCase().startsWith(cmd.toLowerCase())) {
+        const path = trimmedContent.substring(cmd.length).trim();
+        if (!path) {
+          const currentCwd = this.qwenAgentService.getCwd(sessionKey);
+          return { handled: true, response: `当前工作目录：${currentCwd}\n用法：${cmd} <路径>` };
+        }
+        const result = await this.qwenAgentService.setCwd(sessionKey, path);
+        if (result.success) {
+          return { handled: true, response: `工作目录已切换为：${path}` };
+        } else {
+          return { handled: true, response: `切换目录失败：${result.error}` };
+        }
+      }
+    }
+
+    // Check for /pwd command
+    for (const cmd of CONTROL_COMMANDS.PWD) {
+      if (trimmedContent.toLowerCase() === cmd.toLowerCase()) {
+        const currentCwd = this.qwenAgentService.getCwd(sessionKey);
+        return { handled: true, response: `当前工作目录：${currentCwd}` };
+      }
+    }
+
+    // Check for /status command
+    for (const cmd of CONTROL_COMMANDS.STATUS) {
+      if (trimmedContent.toLowerCase() === cmd.toLowerCase() || trimmedContent.toLowerCase().startsWith(cmd.toLowerCase() + ' ')) {
+        const state = this.qwenAgentService.getSessionState(sessionKey);
+        return {
+          handled: true,
+          response: `当前会话状态:\n- 工作目录：${state.cwd}\n- 模型：${state.model}\n- 权限模式：${state.permissionMode}`
+        };
+      }
+    }
+
+    // Check for /model command
+    for (const cmd of CONTROL_COMMANDS.MODEL) {
+      if (trimmedContent.toLowerCase().startsWith(cmd.toLowerCase())) {
+        const model = trimmedContent.substring(cmd.length).trim();
+        if (!model) {
+          const currentModel = this.qwenAgentService.getModel(sessionKey);
+          return { handled: true, response: `当前模型：${currentModel}\n用法：${cmd} <模型名称>` };
+        }
+        const result = await this.qwenAgentService.setModel(sessionKey, model);
+        if (result.success) {
+          return { handled: true, response: `模型已切换为：${model}` };
+        } else {
+          return { handled: true, response: `切换模型失败：${result.error}` };
+        }
+      }
+    }
+
+    // Check for /mode command
+    for (const cmd of CONTROL_COMMANDS.MODE) {
+      if (trimmedContent.toLowerCase().startsWith(cmd.toLowerCase())) {
+        const mode = trimmedContent.substring(cmd.length).trim();
+        if (!mode) {
+          const currentMode = this.qwenAgentService.getPermissionMode(sessionKey);
+          return { handled: true, response: `当前权限模式：${currentMode}\n可用模式：default, plan, auto-edit, yolo\n用法：${cmd} <模式>` };
+        }
+        const validModes = ['default', 'plan', 'auto-edit', 'yolo'];
+        if (!validModes.includes(mode.toLowerCase())) {
+          return { handled: true, response: `无效的权限模式：${mode}\n可用模式：default, plan, auto-edit, yolo` };
+        }
+        const result = await this.qwenAgentService.setPermissionMode(sessionKey, mode.toLowerCase());
+        if (result.success) {
+          return { handled: true, response: `权限模式已切换为：${mode}` };
+        } else {
+          return { handled: true, response: `切换权限模式失败：${result.error}` };
+        }
+      }
+    }
+
+    return { handled: false };
   }
 
   /**
@@ -34,6 +130,12 @@ export class DingTalkQwenConnector {
    */
   async processMessage(text: string, sessionKey: string): Promise<string> {
     try {
+      // First check if it's a control command
+      const controlResult = await this.handleControlCommand(text, sessionKey);
+      if (controlResult.handled) {
+        return controlResult.response || '';
+      }
+
       // Get conversation history for this session
       const history = this.sessionPrompts.get(sessionKey) || [];
 
@@ -41,7 +143,7 @@ export class DingTalkQwenConnector {
       const fullPrompt = this.buildPromptWithHistory(text, history);
 
       // Send the message to Qwen agent
-      const agentResponse = await this.qwenAgentService.sendPrompt(fullPrompt);
+      const agentResponse = await this.qwenAgentService.sendPrompt(fullPrompt, sessionKey);
 
       // Check if there was an error
       if (agentResponse.error) {
@@ -111,6 +213,9 @@ export class DingTalkQwenConnector {
     const { sessionKey, isNew } = this.dingtalkClient.getSessionKey(message.senderId, forceNewSession);
 
     if (forceNewSession) {
+      // Clear session state for new session
+      this.qwenAgentService.clearSession(sessionKey);
+      this.sessionPrompts.delete(sessionKey);
       await this.replyToMessage(message, '已开始新的会话，请问有什么可以帮您？');
       return;
     }
